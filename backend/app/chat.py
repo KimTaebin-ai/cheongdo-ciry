@@ -3,23 +3,27 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import inspect
 import json
 import logging
 import os
 import re
+import sys
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from contextvars import ContextVar, Token
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from pathlib import Path
 from uuid import uuid4
 
 from agent_framework.github import GitHubCopilotAgent
 from copilot.session import PermissionHandler
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
+from mcp import ClientSession, StdioServerParameters, stdio_client
 from pydantic import BaseModel
 
 from .adapters import SampleKepcoAdapter
@@ -35,13 +39,24 @@ SYSTEM_INSTRUCTIONS = """당신은 한국어 청구 도우미입니다. 짧게 �
 
 TOOL_EVENTS: ContextVar[list[dict[str, object]] | None] = ContextVar("tool_events", default=None)
 router = APIRouter()
-store = Store(os.environ.get("DB_PATH", "data.db"))
+# 메인 프로세스와 MCP 서버 프로세스가 같은 SQLite 파일을 보도록 절대 경로로 고정한다.
+DB_PATH = os.path.abspath(os.environ.get("DB_PATH", "data.db"))
+store = Store(DB_PATH)
 adapter = SampleKepcoAdapter()
 agent: GitHubCopilotAgent | None = None
 sessions: dict[str, object] = {}
 agent_lock = asyncio.Lock()
 rate_limiter: dict[str, list[float]] = {}
 logger = logging.getLogger(__name__)
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+MCP_SERVER_NAME = "cheongdo-app"
+MCP_TOOL_NAMES = [
+    "list_due_bills", "get_bill", "get_rent", "get_rent_transfer_text", "list_reminders", "get_payment_guide",
+]
+# MCP가 연결되면 읽기는 MCP 도구가 맡고, 함수 도구로는 쓰기(제안)와 샘플 갱신만 남긴다.
+WRITE_TOOL_NAMES = {"refresh_electricity", "save_rent", "confirm_paid", "set_reminder_enabled"}
+mcp_status = "fallback"
 
 
 class ChatRequest(BaseModel):
@@ -164,19 +179,97 @@ def make_tools() -> list[object]:
     ]
 
 
+def _mcp_params() -> StdioServerParameters:
+    return StdioServerParameters(
+        command=sys.executable, args=["-m", "backend.mcp_server"], env={"DB_PATH": DB_PATH}, cwd=str(REPO_ROOT),
+    )
+
+
+def mcp_server_config() -> dict:
+    """Copilot SDK `mcp_servers` 항목. CLI가 이 명령으로 stdio 서버를 직접 띄운다."""
+    params = _mcp_params()
+    return {
+        "type": "stdio", "command": params.command, "args": params.args, "env": params.env or {},
+        "working_directory": str(params.cwd), "tools": MCP_TOOL_NAMES, "timeout": 10000,
+    }
+
+
+async def _mcp_healthy(timeout: float) -> bool:
+    if os.environ.get("MCP_ENABLED", "1") != "1":
+        return False
+    try:
+        async with asyncio.timeout(timeout):
+            async with stdio_client(_mcp_params()) as (read, write), ClientSession(read, write) as client:
+                await client.initialize()
+                names = {tool.name for tool in (await client.list_tools()).tools}
+        return set(MCP_TOOL_NAMES) <= names
+    except Exception:
+        logger.exception("MCP probe failed")
+        return False
+
+
+async def probe_mcp(timeout: float = 15) -> str:
+    """시작 시 MCP 서버를 한 번 띄워 도구 목록을 확인한다. 실패하면 함수 도구로 대체한다."""
+    global mcp_status
+    mcp_status = "connected" if await _mcp_healthy(timeout) else "fallback"
+    return mcp_status
+
+
+def agent_tools() -> list[object]:
+    tools = make_tools()
+    if mcp_status == "connected":
+        tools = [tool for tool in tools if tool.__name__ in WRITE_TOOL_NAMES]
+    return tools
+
+
 def get_agent() -> GitHubCopilotAgent:
     global agent
     if agent is None:
-        agent = GitHubCopilotAgent(
-            instructions=SYSTEM_INSTRUCTIONS,
-            tools=make_tools(),
-            default_options={
-                "model": os.getenv("GITHUB_COPILOT_MODEL", "gpt-5"),
-                "timeout": int(os.getenv("GITHUB_COPILOT_TIMEOUT", "60")),
-                "on_permission_request": PermissionHandler.approve_all,
-            },
-        )
+        options = {
+            "model": os.getenv("GITHUB_COPILOT_MODEL", "gpt-5"),
+            "timeout": int(os.getenv("GITHUB_COPILOT_TIMEOUT", "60")),
+            "on_permission_request": PermissionHandler.approve_all,
+        }
+        if mcp_status == "connected":
+            options["mcp_servers"] = {MCP_SERVER_NAME: mcp_server_config()}
+        agent = GitHubCopilotAgent(instructions=SYSTEM_INSTRUCTIONS, tools=agent_tools(), default_options=options)
     return agent
+
+
+async def fall_back_from_mcp() -> None:
+    """MCP를 쓰는 에이전트가 실패하면 MCP 서버를 다시 확인한다.
+    MCP가 응답하지 않을 때만 함수 도구 에이전트로 바꾼다(토큰·모델 오류로는 바꾸지 않는다). 다음 요청부터 적용된다."""
+    global agent, mcp_status
+    if mcp_status != "connected" or await _mcp_healthy(timeout=5):
+        return
+    mcp_status = "fallback"
+    old, agent = agent, None
+    sessions.clear()
+    if old is not None:
+        with contextlib.suppress(Exception):
+            await old.stop()
+
+
+def _mcp_tool_name(name: str) -> str | None:
+    """CLI가 붙이는 서버 접두사를 떼고 MCP 도구 이름을 찾는다."""
+    for tool in sorted(MCP_TOOL_NAMES, key=len, reverse=True):
+        if name == tool or name.endswith(f"-{tool}") or name.endswith(f"__{tool}") or name.endswith(f"/{tool}"):
+            return tool
+    return None
+
+
+def _mcp_events(update: object, calls: dict[str, str]) -> list[dict[str, object]]:
+    """스트림의 function_call/function_result 중 MCP 도구 호출을 SSE 도구 이벤트로 바꾼다."""
+    out: list[dict[str, object]] = []
+    for content in getattr(update, "contents", None) or []:
+        kind = getattr(content, "type", None)
+        if kind == "function_call" and (tool := _mcp_tool_name(getattr(content, "name", "") or "")):
+            calls[getattr(content, "call_id", "") or ""] = tool
+            out.append({"type": "tool_call", "name": tool, "source": "mcp"})
+        elif kind == "function_result" and (tool := calls.pop(getattr(content, "call_id", "") or "", None)):
+            failed = getattr(content, "exception", None) is not None
+            out.append({"type": "tool_result", "name": tool, "source": "mcp", "summary": "MCP 조회 실패" if failed else "MCP 조회"})
+    return out
 
 
 def sse(event: str, data: object) -> str:
@@ -270,14 +363,45 @@ def _parse_rent(message: str) -> RentConfig | None:
     )
 
 
+async def shutdown_agent() -> None:
+    """Stop the shared Copilot client once, when the app shuts down."""
+    if agent is not None:
+        await agent.stop()
+
+
 async def _stream_agent_response(current_agent: GitHubCopilotAgent, message: str, session: object) -> AsyncIterator[object]:
     timeout = int(os.getenv("GITHUB_COPILOT_TIMEOUT", "60"))
-    async with current_agent:
-        result = current_agent.run(message, stream=True, session=session)
-        stream = await asyncio.wait_for(result, timeout=timeout) if inspect.isawaitable(result) else result
-        async with asyncio.timeout(timeout):
-            async for update in stream:
-                yield update
+    # start()는 이미 시작된 클라이언트면 바로 돌아온다. 요청마다 CLI를 띄웠다 닫지 않는다.
+    await asyncio.wait_for(current_agent.start(), timeout=timeout)
+    result = current_agent.run(message, stream=True, session=session)
+    stream = await asyncio.wait_for(result, timeout=timeout) if inspect.isawaitable(result) else result
+    async with asyncio.timeout(timeout):
+        async for update in stream:
+            yield update
+
+
+def _paid_request(message: str) -> str | None:
+    """프런트가 보내는 납부 확인 요청(bill_id=...)만 규칙으로 처리한다."""
+    if "confirm_paid" not in message and "납부 확인" not in message:
+        return None
+    match = re.search(r"bill_id=([\w.-]+)", message)
+    return match.group(1) if match else None
+
+
+def _reminder_request(message: str) -> bool | None:
+    if "알림" not in message:
+        return None
+    if (match := re.search(r"enabled=(true|false)", message)) is not None:
+        return match.group(1) == "true"
+    if re.search(r"(꺼|끄|해제|중지)", message):
+        return False
+    if re.search(r"(켜|동의)", message):
+        return True
+    return None
+
+
+ELECTRICITY_QUERY = re.compile(r"(얼마|조회|알려|보여|확인|금액|납부기한|청구)")
+ELECTRICITY_NOT_QUERY = re.compile(r"(등록|입력|냈|납부했|아끼|절약)")
 
 
 async def _deterministic_chat(request: ChatRequest) -> ChatResponse | Proposal | None:
@@ -291,7 +415,16 @@ async def _deterministic_chat(request: ChatRequest) -> ChatResponse | Proposal |
         proposal = create_proposal(request.session_id, "save_rent", result["payload"])
         proposal.missing_fields = result["missing_fields"]
         return proposal
-    if "전기" in request.message:
+    if (bill_id := _paid_request(request.message)) is not None:
+        if make_tools()[1](bill_id) is None:
+            return _response("납부를 확인할 청구를 찾지 못했어요.")
+        result = make_tools()[7](bill_id)
+        return create_proposal(request.session_id, "confirm_paid", result)
+    if (enabled := _reminder_request(request.message)) is not None:
+        result = make_tools()[8](enabled)
+        return create_proposal(request.session_id, "set_reminder_enabled", result)
+    if ("전기" in request.message and ELECTRICITY_QUERY.search(request.message)
+            and not ELECTRICITY_NOT_QUERY.search(request.message)):
         bills = [Bill.model_validate(item) for item in make_tools()[0]("electricity")]
         if not bills:
             bills = [Bill.model_validate(make_tools()[2]())]
@@ -305,6 +438,14 @@ async def _deterministic_chat(request: ChatRequest) -> ChatResponse | Proposal |
     return None
 
 
+PROPOSAL_PROMPTS = {
+    "save_bill": "추출 결과를 확인해 주세요. 이대로 저장할까요?",
+    "save_rent": "월세 정보를 확인해 주세요. 이대로 저장할까요?",
+    "confirm_paid": "이 청구를 사용자 확인으로 납부 기록할까요?",
+    "set_reminder_enabled": "알림 설정을 이대로 바꿀까요?",
+}
+
+
 async def chat_events(request: ChatRequest) -> AsyncIterator[str]:
     if not _allow_chat(request.session_id):
         yield sse("error", {"kind": "rate_limit", "message": "요청이 너무 많아요. 1분 후 다시 시도해 주세요."})
@@ -312,38 +453,42 @@ async def chat_events(request: ChatRequest) -> AsyncIterator[str]:
     events: list[dict[str, object]] = []
     token: Token = TOOL_EVENTS.set(events)
     try:
-        async with agent_lock:
-            deterministic = await _deterministic_chat(request)
-            if isinstance(deterministic, Proposal):
-                for event in events:
-                    yield sse(event["type"], {key: value for key, value in event.items() if key != "type"})
-                yield sse("proposal", {
-                    "proposal_id": deterministic.proposal_id,
-                    "action": deterministic.action,
-                    "payload": deterministic.payload,
-                    "bill": deterministic.payload if deterministic.action == "save_bill" else None,
-                    "missing_fields": deterministic.missing_fields,
-                })
-                yield sse("token", {"text": "추출 결과를 확인해 주세요. 이대로 저장할까요?"})
-                yield sse("done", _response(
-                    "확인 후 저장할 수 있습니다.",
-                    pending={"proposal_id": deterministic.proposal_id, "action": deterministic.action},
-                ).model_dump(mode="json"))
-                return
-            if isinstance(deterministic, ChatResponse):
-                for event in events:
-                    yield sse(event["type"], {key: value for key, value in event.items() if key != "type"})
-                yield sse("done", deterministic.model_dump(mode="json"))
-                return
+        # 규칙 경로는 모델을 쓰지 않으므로 잠금 밖에서 바로 처리한다.
+        deterministic = await _deterministic_chat(request)
+        if isinstance(deterministic, Proposal):
+            for event in events:
+                yield sse(event["type"], {key: value for key, value in event.items() if key != "type"})
+            yield sse("proposal", {
+                "proposal_id": deterministic.proposal_id,
+                "action": deterministic.action,
+                "payload": deterministic.payload,
+                "bill": deterministic.payload if deterministic.action == "save_bill" else None,
+                "missing_fields": deterministic.missing_fields,
+            })
+            yield sse("token", {"text": PROPOSAL_PROMPTS.get(deterministic.action, "확인 후 적용할까요?")})
+            yield sse("done", _response(
+                "확인 후 적용할 수 있습니다.",
+                pending={"proposal_id": deterministic.proposal_id, "action": deterministic.action},
+            ).model_dump(mode="json"))
+            return
+        if isinstance(deterministic, ChatResponse):
+            for event in events:
+                yield sse(event["type"], {key: value for key, value in event.items() if key != "type"})
+            yield sse("done", deterministic.model_dump(mode="json"))
+            return
 
+        # 공유 Copilot 클라이언트의 동시 실행 안전성이 확인되지 않아 모델 호출만 직렬화한다.
+        async with agent_lock:
             text_parts: list[str] = []
             try:
                 current_agent = get_agent()
-                session = sessions.setdefault(
-                    request.session_id, current_agent.create_session(session_id=request.session_id)
-                )
+                if request.session_id not in sessions:
+                    sessions[request.session_id] = current_agent.create_session(session_id=request.session_id)
+                session = sessions[request.session_id]
                 emitted = 0
+                mcp_calls: dict[str, str] = {}
                 async for update in _stream_agent_response(current_agent, request.message, session):
+                    events.extend(_mcp_events(update, mcp_calls))
                     for event in events[emitted:]:
                         yield sse(event["type"], {key: value for key, value in event.items() if key != "type"})
                     emitted = len(events)
@@ -378,6 +523,7 @@ async def chat_events(request: ChatRequest) -> AsyncIterator[str]:
                     yield sse("error", {"kind": "model", "message": "모델 호출 시간이 초과됐어요"})
             except Exception:
                 logger.exception("model stream failed")
+                await fall_back_from_mcp()
                 if text_parts:
                     yield sse("done", _response("".join(text_parts)).model_dump(mode="json"))
                 else:

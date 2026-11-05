@@ -32,9 +32,11 @@ async def _tick_loop() -> None:
 async def lifespan(_: FastAPI):
     if os.environ.get("SEED_SAMPLE", "1") == "1":
         store.seed_demo(adapter)
+    await chat_module.probe_mcp()
     task = asyncio.create_task(_tick_loop())
     yield
     task.cancel()
+    await chat_module.shutdown_agent()
 
 
 app = FastAPI(title="1인 가구 독립 도우미 API", lifespan=lifespan)
@@ -61,7 +63,8 @@ async def demo_auth(request: Request, call_next):
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "kepco_mode": "sample", "demo_time_shift_hours": demo_offset_hours()}
+    return {"status": "ok", "kepco_mode": "sample", "demo_time_shift_hours": demo_offset_hours(),
+            "mcp": chat_module.mcp_status}
 
 
 @app.get("/api/bills", response_model=list[Bill])

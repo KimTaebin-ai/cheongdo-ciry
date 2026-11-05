@@ -10,7 +10,16 @@ const initial = () => new DemoSession();
 const SEEN_KEY = 'gam-good-youth.seen-notices';
 const readSeen = () => { try { return new Set<string>(JSON.parse(localStorage.getItem(SEEN_KEY) ?? '[]')); } catch { return new Set<string>(); } };
 const writeSeen = (s: Set<string>) => { try { localStorage.setItem(SEEN_KEY, JSON.stringify([...s].slice(-200))); } catch { /* 저장할 수 없는 브라우저 환경 */ } };
-const timeText = (iso: string | null | undefined) => { if (!iso) return ''; const d = new Date(iso); return Number.isNaN(d.getTime()) ? '' : new Intl.DateTimeFormat('ko-KR', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Seoul' }).format(d); };
+/** 채팅 라우터(live.ts·demo.ts)가 알아듣는 표현. 칩은 입력창을 채우기만 하고, 사용자가 값을 고친 뒤 보낸다. */
+const PROMPTS = [
+  { label: '월세 등록', icon: Plus, text: '월세 45만 원, 매달 8일, 국민은행 계좌 123-456-789012, 예금주 홍길동으로 등록해줘' },
+  { label: '전기요금 등록', icon: Zap, text: '전기요금 32,500원, 납부기한 2026-11-20 등록해줘' },
+  { label: '납부했어요', icon: CheckCheck, text: '이번 달 월세 냈어' },
+  { label: '송금 정보', icon: Copy, text: '월세 송금 정보 보여줘' },
+  { label: '알림 켜기', icon: Bell, text: '알림 켜줘' },
+];
+const PLACEHOLDERS = PROMPTS.map(p => `예) ${p.text}`);
+const timeText =(iso: string | null | undefined) => { if (!iso) return ''; const d = new Date(iso); return Number.isNaN(d.getTime()) ? '' : new Intl.DateTimeFormat('ko-KR', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Seoul' }).format(d); };
 
 function Mascot({ className = '' }: { className?: string }) {
   return <svg className={`mascot ${className}`} viewBox="0 0 80 80" fill="none" aria-hidden="true"><path d="M40 19C16 12 5 29 9 49c3 17 16 26 31 26s28-9 31-26C75 29 64 12 40 19Z" fill="#FF7A1A"/><path d="m40 25-15-11 16 3L52 8l-2 13 13 6-19 2-10 9 2-12-15-1 19-2Z" fill="#25221F"/><path d="M43 16V7" stroke="#25221F" strokeWidth="4" strokeLinecap="round"/><ellipse cx="28" cy="45" rx="2.5" ry="3.5" fill="#25221F"/><ellipse cx="52" cy="45" rx="2.5" ry="3.5" fill="#25221F"/><path d="M35 52q5 6 10 0" stroke="#25221F" strokeWidth="2.5" strokeLinecap="round"/><ellipse cx="21" cy="51" rx="5" ry="2.5" fill="#FFAA76"/><ellipse cx="59" cy="51" rx="5" ry="2.5" fill="#FFAA76"/></svg>;
@@ -38,6 +47,8 @@ export default function App() {
   const [stream, setStream] = useState('');
   const [error, setError] = useState('');
   const [retry, setRetry] = useState('');
+  const [hintIndex, setHintIndex] = useState(0);
+  useEffect(() => { if (input) return; const t = setInterval(() => setHintIndex(i => (i + 1) % PLACEHOLDERS.length), 4000); return () => clearInterval(t); }, [input]);
   const [panel, setPanel] = useState<'menu' | 'calendar' | 'notifications' | null>(null);
   const [bills, setBills] = useState<Bill[]>([]);
   const [consent, setConsent] = useState(() => live?.consent ?? false);
@@ -209,7 +220,9 @@ export default function App() {
         {busy && <div className="message assistant"><Mascot/><div className="message-body"><p className="message-text" role="status">{stream || '말씀하신 내용을 확인하고 있어요'}{!stream && <span className="typing"><i/><i/><i/></span>}</p></div></div>}
         {error && <div className="error-box" role="alert"><strong>연결을 확인해 주세요</strong><p>{error}</p>{retry && <Button onClick={() => void send(retry)}><RotateCcw size={15}/>다시 시도</Button>}</div>}
       </div></div>
-      <form className="composer-wrap" onSubmit={(e: FormEvent) => { e.preventDefault(); void send(input); }}><div className="composer"><textarea ref={inputRef} value={input} maxLength={2000} rows={2} aria-label="메시지" placeholder="월세나 전기요금, 물어보세요" onChange={e => setInput(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); void send(input); } }}/><div className="composer-bottom"><span><MessageCircle size={16}/>{apiMode ? '감좋은청년과 대화하기' : '예시 정보로 편하게 체험하세요'}</span><button className="send-button" type="submit" aria-label="메시지 보내기" disabled={busy || !input.trim()}><ArrowUp size={20}/></button></div></div><p className="composer-note">{apiMode ? '금액과 납부일은 등록된 정보를 확인해 주세요. 실제 송금·결제는 하지 않아요.' : '프런트 데모 · 새로고침하면 입력한 기록이 사라져요.'}</p></form>
+      <form className="composer-wrap" onSubmit={(e: FormEvent) => { e.preventDefault(); void send(input); }}>
+        <div className="prompt-chips" role="group" aria-label="입력 예시">{PROMPTS.map(({ label, icon: Icon, text }) => <button type="button" key={label} className="prompt-chip" disabled={busy} onClick={() => { setInput(text); requestAnimationFrame(() => { const el = inputRef.current; el?.focus(); el?.setSelectionRange(text.length, text.length); }); }}><Icon size={13}/>{label}</button>)}</div>
+        <div className="composer"><textarea ref={inputRef} value={input} maxLength={2000} rows={2} aria-label="메시지" aria-describedby="composer-hint" placeholder={messages.at(-1)?.role === 'assistant' && /알려주세요/.test(messages.at(-1)!.text) ? '빠진 정보만 이어서 입력하면 돼요 · 그만두려면 “취소”' : PLACEHOLDERS[hintIndex]} onChange={e => setInput(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); void send(input); } }}/><div className="composer-bottom"><span><MessageCircle size={16}/>{apiMode ? '감좋은청년과 대화하기' : '예시 정보로 편하게 체험하세요'}</span><button className="send-button" type="submit" aria-label="메시지 보내기" disabled={busy || !input.trim()}><ArrowUp size={20}/></button></div></div><p className="composer-note" id="composer-hint">위 예시를 눌러 내 정보로 고친 뒤 보내세요 · {apiMode ? '금액과 납부일은 등록된 정보를 확인해 주세요. 실제 송금·결제는 하지 않아요.' : '프런트 데모 · 새로고침하면 입력한 기록이 사라져요.'}</p></form>
     </main>
     {panel && <Modal title={panel === 'calendar' ? '납부 캘린더' : panel === 'notifications' ? '알림 설정' : '내 독립생활'} close={close}>{panel === 'calendar' ? <>
       <div className="month-control"><button className="icon-button" aria-label="이전 달" onClick={() => changeMonth(-1)}><ChevronLeft/></button><strong>{year}년 {month}월</strong><button className="icon-button" aria-label="다음 달" onClick={() => changeMonth(1)}><ChevronRight/></button></div>

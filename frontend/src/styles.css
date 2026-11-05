@@ -14,3 +14,4 @@
 .notice-error{font-size:11px;color:#a5531c;background:#fff6ef;border-radius:10px;padding:12px 14px;line-height:1.7;margin:4px 0 8px}
 .toast{text-align:left;line-height:1.6}
 @media(max-width:760px){.transfer-text{font-size:12px}.via-note{font-size:8px}.toast{top:84px;bottom:auto}}
+.prompt-chips{max-width:688px;margin:0 auto 8px;display:flex;gap:6px;overflow-x:auto;scrollbar-width:none;-webkit-overflow-scrolling:touch}.prompt-chips::-webkit-scrollbar{display:none}.prompt-chip{display:inline-flex;align-items:center;gap:5px;flex-shrink:0;min-height:32px;padding:6px 12px;border:1px solid #edeae6;background:#fff;border-radius:999px;font-size:11px;color:#6f675f;white-space:nowrap}.prompt-chip svg{color:#d96a19}.prompt-chip:hover:not(:disabled){border-color:#e4ae83;color:#bf4b00;background:#fffaf5}@media(max-width:760px){.prompt-chips{margin-bottom:7px}.prompt-chip{font-size:11px;min-height:34px}}

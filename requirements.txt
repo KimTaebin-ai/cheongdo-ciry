@@ -2,3 +2,4 @@ agent-framework-github-copilot==2.1.1
 fastapi==0.115.6
 uvicorn[standard]==0.34.0
 pydantic>=2.7
+mcp==1.27.2

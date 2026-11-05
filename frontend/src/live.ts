@@ -17,7 +17,8 @@ const writeConsent = (v: boolean) => { try { localStorage.setItem(CONSENT_KEY, v
 const RENT_LABELS = { amount_krw: '월세 금액(예: 45만 원)', due_day: '매월 납부일(예: 매달 8일)', bank: '은행 이름', account_number: '계좌번호(하이픈 포함)', account_holder: '예금주 이름(예: 예금주 김예시)' } as const;
 const modeOf = (cards: Bill[] = []): Reply['mode'] => cards.some(b => b.source === 'sample') ? 'sample' : 'real';
 /** 도구 의도(등록·납부·알림)는 에이전트를 오래 기다리지 않고 앱 API로 넘어간다. */
-const AGENT_TOOL_TIMEOUT = 45000;
+/** 도구성 요청은 서버 규칙 경로가 바로 답한다. 모델로 넘어가 늦어지면 기다리지 않고 앱 API로 처리한다. */
+const AGENT_TOOL_TIMEOUT = 8000;
 const rentMessage = (r: Rent) => `월세 등록\n월세 ${r.amount_krw}원\n매달 ${r.due_day}일\n${r.bank}\n계좌: ${r.account_number}\n예금주: ${r.account_holder}`;
 const sameRent = (p: Record<string, unknown>, r: Rent) =>
   (['amount_krw', 'due_day', 'bank', 'account_number', 'account_holder', 'start_month'] as const).every(k => p[k] === r[k]);
@@ -161,11 +162,12 @@ export class LiveSession {
     if (/알림/.test(text) && /\d+\s*시|시간|바꿔|변경/.test(text)) return this.app('지금은 납부 3일 전·1일 전 오전 9시 알림만 지원해요. 끄려면 “알림 꺼줘”라고 해 주세요.');
 
     if (/월세|송금|계좌/.test(text)) {
+      const rentRequest = fetchRent(); const cardsRequest = this.billsOf('rent');
+      rentRequest.catch(() => undefined);
       const outcome = await this.agentTool('월세 송금 안내 보여줘');
       const agentText = typeof outcome?.final?.rent_transfer_text === 'string' ? outcome.final.rent_transfer_text : null;
-      const [transfer, rent] = await Promise.all([agentText ? Promise.resolve(agentText) : fetchTransferText(), fetchRent()]);
+      const [transfer, rent, cards] = await Promise.all([agentText ? Promise.resolve(agentText) : fetchTransferText(), rentRequest, cardsRequest]);
       if (!transfer) return this.app('아직 월세가 등록되지 않았어요. “월세 45만 원, 매달 8일로 등록해줘”라고 시작해 보세요.');
-      const cards = await this.billsOf('rent');
       const reply = this.app('월세 보낼 때 이 정보를 쓰세요. 복사해도 납부 완료로 기록하지 않아요.', { rent: missingRent(rent).length ? undefined : rent as Rent, rent_transfer_text: transfer, bill_cards: cards });
       return agentText && outcome ? { ...reply, via: 'agent', tools: outcome.tools } : reply;
     }
