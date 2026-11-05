@@ -1,0 +1,36 @@
+import { test, expect } from '@playwright/test';
+test('mobile registration, transfer, sample lookup, calendar and payment confirmation', async ({page}) => {
+  const errors:string[]=[]; page.on('pageerror',e=>errors.push(e.message));
+  await page.goto('/');
+  await expect(page.locator('header').getByText('감좋은청년',{exact:true})).toBeVisible();
+  await page.getByLabel('메시지',{exact:true}).fill('월세 45만 원, 매달 8일, 예시은행 000-123-456789, 예금주 김예시로 등록해줘');
+  await page.getByRole('button',{name:'메시지 보내기'}).click();
+  await expect(page.getByRole('button',{name:'확인하고 등록'})).toBeVisible();
+  await page.getByRole('button',{name:'확인하고 등록'}).click();
+  await expect(page.getByRole('button',{name:'송금정보 복사'})).toBeVisible();
+  await page.getByLabel('메시지',{exact:true}).fill('한전 샘플 조회해줘');
+  await page.getByRole('button',{name:'메시지 보내기'}).click();
+  await expect(page.getByText('UI 시연용 합성 청구예요.',{exact:false})).toBeVisible();
+  await expect(page.getByRole('link',{name:'한전ON에서 납부하기'})).toHaveAttribute('href','https://online.kepco.co.kr/');
+  await page.getByRole('button',{name:'캘린더 열기',exact:true}).click();
+  await expect(page.getByRole('dialog',{name:'납부 캘린더'})).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  await page.getByLabel('메시지',{exact:true}).fill('전기요금 납부했어');
+  await page.getByRole('button',{name:'메시지 보내기'}).click();
+  await page.getByRole('button',{name:'납부 기록하기',exact:true}).click();
+  await expect(page.getByText('사용자 확인으로 납부 기록을 남겼어요.',{exact:false})).toBeVisible();
+  expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
+  expect(errors).toEqual([]);
+  await page.screenshot({path:'test-results/mobile.png',fullPage:true});
+});
+test('desktop layout and notification consent are keyboard accessible',async({page})=>{
+  await page.setViewportSize({width:1440,height:1000});await page.goto('/');
+  await expect(page.getByRole('button',{name:'생활비 대화',exact:true})).toBeVisible();
+  await page.getByRole('button',{name:'알림 열기',exact:true}).click();
+  await page.getByRole('button',{name:'동의하고 알림 켜기'}).click();
+  await expect(page.getByRole('button',{name:'알림 끄기',exact:true})).toBeVisible();
+  await page.keyboard.press('Escape');
+  expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
+  await page.screenshot({path:'test-results/desktop.png',fullPage:true});
+});

@@ -7,3 +7,11 @@ __pycache__/
 .pytest_cache/
 .static-dist/
 node_modules/
+dist/
+test-results/
+playwright-report/
+.env.*
+!.env.example
+.DS_Store
+*.tsbuildinfo
+frontend/node_modules/
