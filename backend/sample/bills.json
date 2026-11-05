@@ -1,0 +1,4 @@
+[
+  {"id":"electricity-2026-11","kind":"electricity","period":"2026-11","amount_krw":48320,"due_date":"2026-11-25","autopay":false,"status":"pending","source":"sample","checked_at":"2026-11-05T14:00:00+09:00","payment_url":"https://cyber.kepco.co.kr","reminder_enabled":true,"due_date_adjusted":false},
+  {"id":"rent-2026-11","kind":"rent","period":"2026-11","amount_krw":500000,"due_date":"2026-11-30","autopay":null,"status":"pending","source":"manual","checked_at":"2026-11-05T14:00:00+09:00","payment_url":null,"reminder_enabled":true,"due_date_adjusted":true}
+]
