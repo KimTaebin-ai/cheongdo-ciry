@@ -1,5 +1,5 @@
-import type { Action, Bill, Rent, Reply } from './types';
-import { dateKey, dueDate, missingRent, monthKey, parseRent, rentBill, transferText } from './domain';
+import type { Action, Bill, Notice, Rent, Reply } from './types';
+import { dateKey, dueDate, kindLabel, missingRent, money, monthKey, parseRent, rentBill, transferText } from './domain';
 
 /** Deterministic UI simulator, NOT an AI agent or a real KEPCO adapter. No disk storage. */
 export class DemoSession {
@@ -13,7 +13,7 @@ export class DemoSession {
   connected = false;
   electricDraft?: { amount?: number; due?: string };
   pending = new Map<string, Action>();
-  reply(message: string, extra: Partial<Reply> = {}): Reply { return { message, mode: 'sample', ...extra }; }
+  reply(message: string, extra: Partial<Reply> = {}): Reply { return { message, mode: 'sample', via: 'demo', ...extra }; }
   propose(message: string, action: Omit<Action, 'id'>, extra: Partial<Reply> = {}) {
     this.pending.clear();
     const next = { ...action, id: crypto.randomUUID() };
@@ -26,12 +26,12 @@ export class DemoSession {
     if (a.kind === 'rent' && a.rent) {
       this.rent = a.rent; this.draft = undefined;
       const b = rentBill(a.rent); this.bills = [...this.bills.filter(x => x.id !== b.id), b];
-      return this.reply('월세 일정과 계좌를 등록했어요.', { rent: a.rent, bill_cards: [b] });
+      return this.reply('월세 일정과 계좌를 등록했어요.', { rent: a.rent, bill_cards: [b], consent_prompt: !this.consent });
     }
     if (a.kind === 'electricity' && a.bill) {
       this.electricDraft = undefined;
       this.bills = [...this.bills.filter(b => b.id !== a.bill!.id), a.bill];
-      return this.reply('입력한 전기요금 정보를 등록했어요. 한전 자동 조회 결과가 아니에요.', { bill_cards: [{ ...a.bill }] });
+      return this.reply('입력한 전기요금 정보를 등록했어요. 한전 자동 조회 결과가 아니에요.', { bill_cards: [{ ...a.bill }], consent_prompt: !this.consent });
     }
     if (a.kind === 'paid') {
       const b = this.bills.find(x => x.id === a.bill_id);
@@ -106,13 +106,16 @@ export class DemoSession {
     if (/달력|캘린더|날짜/.test(text)) return this.reply('상단 캘린더에서 날짜별 납부일을 확인할 수 있어요.');
     return this.reply('월세 등록·수정, 송금정보 확인, 한전 전기요금 샘플 조회와 알림 설정을 도와드려요.\n이 화면은 규칙 기반 프런트 데모예요. 자유로운 AI 대화는 백엔드 연결 후 사용할 수 있어요.');
   }
-  dueNotifications() {
+  dueNotifications(): Notice[] {
     if (!this.consent || !this.remindersEnabled) return [];
     const today = dateKey();
-    return this.bills.filter(b => b.status === 'pending').filter(b => {
+    const hour = Number(new Intl.DateTimeFormat('en-GB', { hour: 'numeric', hourCycle: 'h23', timeZone: 'Asia/Seoul' }).format(new Date()));
+    return this.bills.flatMap(b => {
+      if (b.status !== 'pending' || !b.due_date) return [];
       const diff = Math.round((new Date(`${b.due_date}T00:00:00+09:00`).getTime() - new Date(`${today}T00:00:00+09:00`).getTime()) / 86400000);
-      const hour = Number(new Intl.DateTimeFormat('en-GB', { hour: 'numeric', hourCycle: 'h23', timeZone: 'Asia/Seoul' }).format(new Date()));
-      return (this.days.includes(diff) && hour >= this.hour) || diff <= 0;
+      if (!((this.days.includes(diff) && hour >= this.hour) || diff <= 0)) return [];
+      const when = diff > 0 ? `납부 ${diff}일 전이에요.` : diff === 0 ? '오늘이 납부일이에요.' : '납부기한이 지났어요. 납부했는지 확인해 주세요.';
+      return [{ id: `${b.id}|demo|${diff}`, bill_id: b.id, message: `${kindLabel(b.kind)} ${when} ${money(b.amount_krw)}, 납부일 ${b.due_date}`, scheduled_at_utc: new Date().toISOString(), source: b.source }];
     });
   }
 }

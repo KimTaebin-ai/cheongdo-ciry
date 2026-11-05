@@ -1,5 +1,5 @@
 import type { Bill, Rent } from './types';
-export const money = (n: number) => `${n.toLocaleString('ko-KR')}원`;
+export const money = (n: number | null | undefined) => typeof n === 'number' ? `${n.toLocaleString('ko-KR')}원` : '금액 미확인';
 export function dateKey(d = new Date()) { return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Seoul', year: 'numeric', month: '2-digit', day: '2-digit' }).format(d); }
 export function monthKey(d = new Date()) { return dateKey(d).slice(0, 7); }
 export function dueDate(month: string, day: number) {
@@ -34,4 +34,15 @@ export function missingRent(r: Partial<Rent>) { return (['amount_krw', 'due_day'
 export function safePaymentUrl(raw?: string | null) {
   if (!raw) return null;
   try { const u = new URL(raw); return u.protocol === 'https:' && ['online.kepco.co.kr', 'cyber.kepco.co.kr'].includes(u.hostname) && !u.username && !u.password ? u.href : null; } catch { return null; }
+}
+export const kindLabel = (kind: Bill['kind']) => kind === 'rent' ? '월세' : '전기요금';
+/** 납부 확인 전 + 날짜 확정된 청구 중 가장 가까운 것. 날짜 없는 자료는 일정으로 쓰지 않는다. */
+export function nextDue(bills: Bill[]) { return bills.filter(b => b.status === 'pending' && b.due_date).sort((a, b) => a.due_date!.localeCompare(b.due_date!))[0]; }
+export function statusText(b: Bill, today = dateKey()) {
+  if (b.status === 'user_confirmed') return '납부 기록 완료 · 사용자 확인';
+  if (!b.due_date) return '납부기한 미확인 · 채팅으로 알려주세요';
+  if (b.autopay) return '자동이체 출금 예정';
+  if (b.due_date < today) return '기한 경과 · 납부 확인 필요';
+  if (b.due_date === today) return '오늘 납부일 · 납부 확인 필요';
+  return '납부 예정';
 }
