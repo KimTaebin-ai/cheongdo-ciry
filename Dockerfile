@@ -4,6 +4,8 @@ WORKDIR /app/frontend
 COPY frontend/package*.json ./
 RUN npm ci
 COPY frontend/ ./
+# 배포 이미지는 실제 백엔드(에이전트·SQLite·알림)에 연결한다. 데모 모드는 로컬 프런트 단독 실행용.
+ENV VITE_APP_MODE=api
 RUN npm run build
 
 FROM python:3.11-slim
