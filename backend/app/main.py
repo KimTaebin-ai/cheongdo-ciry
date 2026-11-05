@@ -12,13 +12,13 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 
-from .adapters import SampleKepcoAdapter
+from . import chat as chat_module
 from .models import Bill, Notification, RentConfig, RentSaveResponse, ReminderSettingsRequest
 from .store import Store
 from .timeutil import demo_enabled, demo_offset_hours, set_demo_offset
 
-adapter = SampleKepcoAdapter()  # 실제 접근 수단 확인 전까지 샘플 (source=sample)
-store = Store(os.environ.get("DB_PATH", "data.db"))
+adapter = chat_module.adapter
+store = chat_module.store
 TICK_SECONDS = int(os.environ.get("REMINDER_TICK_SECONDS", "30"))
 
 
@@ -120,12 +120,7 @@ def demo_time_shift(hours: int):
     return {"demo_time_shift_hours": demo_offset_hours()}
 
 
-try:  # B 영역: 채팅 라우터가 있으면 연결
-    from .chat import router as chat_router  # type: ignore
-
-    app.include_router(chat_router)
-except ImportError:
-    pass
+app.include_router(chat_module.router)
 
 _static = Path(os.environ.get("STATIC_DIR", "static"))
 if _static.is_dir():
