@@ -138,11 +138,12 @@ export async function confirmPaid(billId: string) {
 
 export async function confirmProposal(proposalId: string) {
   const r = await json<Raw>(`/api/proposals/${encodeURIComponent(proposalId)}/confirm`, { method: 'POST', body: JSON.stringify({ session_id: sessionId }) });
-  return { bill: normalizeBill(r.bill), duplicate: r.duplicate === true };
+  return { bill: r.bill == null ? null : normalizeBill(r.bill), bills: billsOf(Array.isArray(r.bills) ? r.bills : []), notice: typeof r.notice === 'string' ? r.notice : null, duplicate: r.duplicate === true };
 }
 
-export type ChatProposal = { id: string; bill: Raw; missing: string[] };
-export type ChatOutcome = { text: string; tools: string[]; proposal?: ChatProposal; result?: Reply; done: boolean };
+export type ChatProposal = { id: string; action: string; payload: Raw; bill?: Raw; missing: string[] };
+/** final: done 이벤트의 응답 본문(송금 안내 등). result와 달리 화면 응답으로 바로 쓰지 않는다. */
+export type ChatOutcome = { text: string; tools: string[]; proposal?: ChatProposal; result?: Reply; final?: Raw; done: boolean };
 
 function validateReply(value: unknown): Reply {
   if (!isObject(value) || typeof value.message !== 'string' || !['real', 'sample'].includes(value.mode as string)) throw new ApiError('서버 응답 형식이 맞지 않아요.');
@@ -150,9 +151,9 @@ function validateReply(value: unknown): Reply {
 }
 
 /** POST /api/chat. SSE 이벤트를 읽어 텍스트·도구 호출·제안을 모은다. error 이벤트는 그대로 실패로 보여준다. */
-export async function streamChat(message: string, onDelta?: (s: string) => void): Promise<ChatOutcome> {
+export async function streamChat(message: string, onDelta?: (s: string) => void, timeoutMs = 75000): Promise<ChatOutcome> {
   let response: Response;
-  try { response = await open('/api/chat', { method: 'POST', headers: { Accept: 'text/event-stream, application/json' }, body: JSON.stringify({ session_id: sessionId, message }) }, 75000); }
+  try { response = await open('/api/chat', { method: 'POST', headers: { Accept: 'text/event-stream, application/json' }, body: JSON.stringify({ session_id: sessionId, message }) }, timeoutMs); }
   catch (e) { if (e instanceof ApiError && (e.status === 404 || e.status === 405)) throw new ApiError('서버에 AI 채팅 기능이 아직 연결되지 않았어요.', e.status); throw e; }
   const out: ChatOutcome = { text: '', tools: [], done: false };
   if (!response.headers.get('content-type')?.includes('text/event-stream')) { out.result = validateReply(await response.json().catch(() => null)); out.done = true; return out; }
@@ -169,9 +170,9 @@ export async function streamChat(message: string, onDelta?: (s: string) => void)
     const type = event ?? (typeof data.type === 'string' ? data.type : '');
     if (type === 'token' || type === 'text_delta') { const d = String(data.text ?? data.delta ?? ''); out.text += d; onDelta?.(d); }
     else if (type === 'tool_call') { if (typeof data.name === 'string') out.tools.push(data.name); }
-    else if (type === 'proposal') { if (typeof data.proposal_id === 'string' && isObject(data.bill)) out.proposal = { id: data.proposal_id, bill: data.bill, missing: Array.isArray(data.missing_fields) ? data.missing_fields.map(String) : [] }; }
+    else if (type === 'proposal') { if (typeof data.proposal_id === 'string') out.proposal = { id: data.proposal_id, action: typeof data.action === 'string' ? data.action : (isObject(data.bill) ? 'save_bill' : ''), payload: isObject(data.payload) ? data.payload : {}, bill: isObject(data.bill) ? data.bill : undefined, missing: Array.isArray(data.missing_fields) ? data.missing_fields.map(String) : [] }; }
     else if (type === 'result') { out.result = validateReply(data.data ?? data); }
-    else if (type === 'done') { out.done = true; }
+    else if (type === 'done') { out.done = true; if (isObject(data)) out.final = data; }
     else if (type === 'error') { throw new ApiError(typeof data.message === 'string' ? data.message : '에이전트 처리에 실패했어요.'); }
   };
   for (;;) {
