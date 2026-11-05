@@ -122,6 +122,6 @@ def demo_time_shift(hours: int):
 
 app.include_router(chat_module.router)
 
-_static = Path(os.environ.get("STATIC_DIR", "static"))
+_static = Path(os.environ.get("STATIC_DIR", "/app/static"))
 if _static.is_dir():
     app.mount("/", StaticFiles(directory=_static, html=True), name="static")
