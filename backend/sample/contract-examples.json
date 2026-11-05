@@ -1,0 +1,11 @@
+{
+  "rent": {"amount_krw": 500000, "due_day": 31, "bank": "샘플은행", "account_number": "000-0000-0000", "account_holder": "홍길동", "start_month": "2026-11"},
+  "chat_response": {
+    "message": "이번 달 전기요금 48,320원, 납부일 11/25입니다. (샘플 데이터)",
+    "bill_cards": ["bills.json 의 Bill 항목"],
+    "rent_transfer_text": "월세 500,000원을 샘플은행 000-0000-0000 (예금주 홍길동)로 송금해 주세요. (안내 문구이며 실제 송금은 하지 않습니다)",
+    "pending_action": null,
+    "mode": "sample"
+  },
+  "reminder": {"bill_id": "electricity-2026-11", "scheduled_at_utc": "2026-11-22T00:00:00Z", "state": "pending", "policy_version": 1}
+}
