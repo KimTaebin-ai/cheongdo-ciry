@@ -122,21 +122,16 @@ async def chat_events(request: ChatRequest) -> AsyncIterator[str]:
                         f"도구 결과 JSON: {json.dumps(tool_data, ensure_ascii=False)}"
                     )
                 result = current_agent.run(agent_message, stream=True, session=session)
-                stream = (
-                    await asyncio.wait_for(
-                        result,
-                        timeout=int(os.getenv("GITHUB_COPILOT_TIMEOUT", "60")),
-                    )
-                    if inspect.isawaitable(result)
-                    else result
-                )
+                timeout_seconds = int(os.getenv("GITHUB_COPILOT_TIMEOUT", "60"))
+                stream = await asyncio.wait_for(result, timeout=timeout_seconds) if inspect.isawaitable(result) else result
                 emitted = 0
-                async for update in stream:
-                    for event in events[emitted:]:
-                        yield sse(event["type"], {key: value for key, value in event.items() if key != "type"})
-                    emitted = len(events)
-                    if getattr(update, "text", None):
-                        yield sse("token", {"text": update.text})
+                async with asyncio.timeout(timeout_seconds):
+                    async for update in stream:
+                        for event in events[emitted:]:
+                            yield sse(event["type"], {key: value for key, value in event.items() if key != "type"})
+                        emitted = len(events)
+                        if getattr(update, "text", None):
+                            yield sse("token", {"text": update.text})
                 for event in events[emitted:]:
                     yield sse(event["type"], {key: value for key, value in event.items() if key != "type"})
                 yield sse("done", {})
