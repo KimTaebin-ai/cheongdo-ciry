@@ -12,6 +12,7 @@ from contextvars import Token
 from pathlib import Path
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 
@@ -62,6 +63,17 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
 
 
 app = FastAPI(title="Cheongdo Ciry Backend", lifespan=lifespan)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        origin.strip()
+        for origin in os.getenv("CORS_ORIGINS", "http://localhost:3000,http://localhost:5173").split(",")
+        if origin.strip()
+    ],
+    allow_credentials=False,
+    allow_methods=["GET", "POST"],
+    allow_headers=["*"],
+)
 
 
 def sse(event: str, data: object) -> str:
@@ -95,7 +107,13 @@ async def chat_events(request: ChatRequest) -> AsyncIterator[str]:
             current_agent = get_agent()
             session = sessions.setdefault(request.session_id, current_agent.create_session(session_id=request.session_id))
             try:
-                tool_data = prefetch_bill_data(request.message)
+                try:
+                    tool_data = prefetch_bill_data(request.message)
+                except RuntimeError as exc:
+                    for event in events:
+                        yield sse(event["type"], {key: value for key, value in event.items() if key != "type"})
+                    yield sse("error", {"kind": "tool", "message": str(exc)})
+                    return
                 agent_message = request.message
                 if tool_data is not None:
                     agent_message = (
@@ -123,9 +141,9 @@ async def chat_events(request: ChatRequest) -> AsyncIterator[str]:
                     yield sse(event["type"], {key: value for key, value in event.items() if key != "type"})
                 yield sse("done", {})
             except asyncio.TimeoutError:
-                yield sse("error", {"message": "모델 호출 시간이 초과됐어요"})
+                yield sse("error", {"kind": "model", "message": "모델 호출 시간이 초과됐어요"})
             except Exception:
-                yield sse("error", {"message": "모델 호출에 실패했어요"})
+                yield sse("error", {"kind": "model", "message": "모델 호출에 실패했어요"})
     finally:
         TOOL_EVENTS.reset(token)
 
