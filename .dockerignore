@@ -1,0 +1,9 @@
+node_modules
+frontend/node_modules
+.venv
+.git
+*.db
+*.sqlite
+__pycache__
+.pytest_cache
+dist
