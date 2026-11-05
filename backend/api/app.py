@@ -6,12 +6,16 @@ import asyncio
 import inspect
 import json
 import os
+import re
+import time
+from datetime import datetime, timedelta
+from uuid import uuid4
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from contextvars import Token
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
@@ -20,7 +24,7 @@ from agent_framework.github import GitHubCopilotAgent
 from copilot.session import PermissionHandler
 
 from backend.agent.fake_store import InMemoryBillStore, sample_store
-from backend.agent.models import BillCategory
+from backend.agent.models import Bill, BillCategory, BillProposal, BillStatus, ExtractedBill
 from backend.agent.tools import TOOL_EVENTS, make_tools
 
 SYSTEM_INSTRUCTIONS = """당신은 한국어 청구 도우미입니다. 짧게 답하세요.
@@ -35,10 +39,18 @@ class ChatRequest(BaseModel):
     message: str
 
 
+class ProposalConfirm(BaseModel):
+    session_id: str
+
+
 store: InMemoryBillStore = sample_store()
 agent: GitHubCopilotAgent | None = None
 sessions: dict[str, object] = {}
 agent_lock = asyncio.Lock()
+rate_limiter: dict[str, list[float]] = {}
+proposals: dict[str, BillProposal] = {}
+confirmed_proposals: dict[str, dict] = {}
+confirmed_proposal_sessions: dict[str, str] = {}
 
 
 def get_agent() -> GitHubCopilotAgent:
@@ -79,6 +91,38 @@ def sse(event: str, data: object) -> str:
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 
+def create_proposal(session_id: str, extracted: dict) -> BillProposal:
+    bill = ExtractedBill.model_validate(extracted)
+    missing_fields = [
+        field for field in ("provider", "category", "billing_month", "amount_krw", "due_date")
+        if getattr(bill, field) is None
+    ]
+    proposal = BillProposal(
+        proposal_id=str(uuid4()),
+        session_id=session_id,
+        bill=bill,
+        missing_fields=missing_fields,
+        expires_at=datetime.now().astimezone() + timedelta(minutes=10),
+    )
+    proposals[proposal.proposal_id] = proposal
+    return proposal
+
+
+def _allow_chat(session_id: str) -> bool:
+    now = time.monotonic()
+    recent = [stamp for stamp in rate_limiter.get(session_id, []) if now - stamp < 60]
+    if len(recent) >= 10:
+        rate_limiter[session_id] = recent
+        return False
+    recent.append(now)
+    rate_limiter[session_id] = recent
+    return True
+
+
+def _is_pasted_bill(message: str) -> bool:
+    return bool(re.search(r"(청구금액|납부기한|납부하실 금액|고지서)", message))
+
+
 def prefetch_bill_data(message: str) -> list[dict] | None:
     lowered = message.lower()
     category = next(
@@ -109,13 +153,29 @@ async def stream_agent_response(current_agent: GitHubCopilotAgent, message: str,
 
 
 async def chat_events(request: ChatRequest) -> AsyncIterator[str]:
+    if not _allow_chat(request.session_id):
+        yield sse("error", {"kind": "rate_limit", "message": "요청이 너무 많아요. 1분 후 다시 시도해 주세요."})
+        return
     events: list[dict[str, object]] = []
     token: Token = TOOL_EVENTS.set(events)
     try:
         async with agent_lock:
-            current_agent = get_agent()
-            session = sessions.setdefault(request.session_id, current_agent.create_session(session_id=request.session_id))
             try:
+                if _is_pasted_bill(request.message):
+                    extract_bill = make_tools(store)[2]
+                    proposal = create_proposal(request.session_id, extract_bill(request.message))
+                    for event in events:
+                        yield sse(event["type"], {key: value for key, value in event.items() if key != "type"})
+                    yield sse("proposal", {
+                        "proposal_id": proposal.proposal_id,
+                        "bill": proposal.bill.model_dump(mode="json"),
+                        "missing_fields": proposal.missing_fields,
+                    })
+                    yield sse("token", {"text": "추출 결과를 확인해 주세요. 이대로 저장할까요?"})
+                    yield sse("done", {})
+                    return
+                current_agent = get_agent()
+                session = sessions.setdefault(request.session_id, current_agent.create_session(session_id=request.session_id))
                 try:
                     tool_data = prefetch_bill_data(request.message)
                 except RuntimeError as exc:
@@ -156,6 +216,36 @@ async def healthz() -> dict[str, str]:
 @app.post("/api/chat")
 async def chat(request: ChatRequest) -> StreamingResponse:
     return StreamingResponse(chat_events(request), media_type="text/event-stream")
+
+
+@app.post("/api/proposals/{proposal_id}/confirm")
+async def confirm_proposal(proposal_id: str, request: ProposalConfirm) -> dict:
+    if proposal_id in confirmed_proposals:
+        if confirmed_proposal_sessions[proposal_id] != request.session_id:
+            raise HTTPException(status_code=404, detail="proposal을 찾을 수 없어요")
+        return {**confirmed_proposals[proposal_id], "created": False, "duplicate": True}
+    proposal = proposals.get(proposal_id)
+    if proposal is None or proposal.session_id != request.session_id:
+        raise HTTPException(status_code=404, detail="proposal을 찾을 수 없어요")
+    if proposal.expires_at <= datetime.now().astimezone():
+        proposals.pop(proposal_id, None)
+        raise HTTPException(status_code=410, detail="proposal이 만료됐어요")
+    blocking_fields = [field for field in proposal.missing_fields if field != "due_date"]
+    if blocking_fields:
+        raise HTTPException(status_code=422, detail={"missing_fields": blocking_fields})
+    bill_data = proposal.bill.model_dump(mode="python")
+    bill_data["id"] = f"bill-{uuid4()}"
+    if bill_data["due_date"]:
+        bill_data["status"] = BillStatus.scheduled.value
+    saved = make_tools(store)[3](Bill.model_validate(bill_data).model_dump(mode="json"))
+    response = {
+        **saved,
+        "reminders": make_tools(store)[4](saved["bill"]["id"]) if saved["bill"]["due_date"] else [],
+    }
+    confirmed_proposals[proposal_id] = response
+    confirmed_proposal_sessions[proposal_id] = request.session_id
+    proposals.pop(proposal_id, None)
+    return response
 
 
 @app.get("/api/bills")
