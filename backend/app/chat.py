@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
+import logging
 import os
 import re
 import time
@@ -40,6 +41,7 @@ agent: GitHubCopilotAgent | None = None
 sessions: dict[str, object] = {}
 agent_lock = asyncio.Lock()
 rate_limiter: dict[str, list[float]] = {}
+logger = logging.getLogger(__name__)
 
 
 class ChatRequest(BaseModel):
@@ -319,6 +321,7 @@ async def chat_events(request: ChatRequest) -> AsyncIterator[str]:
                     "proposal_id": deterministic.proposal_id,
                     "action": deterministic.action,
                     "payload": deterministic.payload,
+                    "bill": deterministic.payload if deterministic.action == "save_bill" else None,
                     "missing_fields": deterministic.missing_fields,
                 })
                 yield sse("token", {"text": "추출 결과를 확인해 주세요. 이대로 저장할까요?"})
@@ -333,12 +336,12 @@ async def chat_events(request: ChatRequest) -> AsyncIterator[str]:
                 yield sse("done", deterministic.model_dump(mode="json"))
                 return
 
+            text_parts: list[str] = []
             try:
                 current_agent = get_agent()
                 session = sessions.setdefault(
                     request.session_id, current_agent.create_session(session_id=request.session_id)
                 )
-                text_parts: list[str] = []
                 emitted = 0
                 async for update in _stream_agent_response(current_agent, request.message, session):
                     for event in events[emitted:]:
@@ -363,13 +366,22 @@ async def chat_events(request: ChatRequest) -> AsyncIterator[str]:
                         "proposal_id": proposal.proposal_id,
                         "action": proposal.action,
                         "payload": proposal.payload,
+                        "bill": proposal.payload if proposal.action == "save_bill" else None,
                         "missing_fields": proposal.missing_fields,
                     })
                 yield sse("done", _response("".join(text_parts)).model_dump(mode="json"))
             except asyncio.TimeoutError:
-                yield sse("error", {"kind": "model", "message": "모델 호출 시간이 초과됐어요"})
+                logger.exception("model stream timed out")
+                if text_parts:
+                    yield sse("done", _response("".join(text_parts)).model_dump(mode="json"))
+                else:
+                    yield sse("error", {"kind": "model", "message": "모델 호출 시간이 초과됐어요"})
             except Exception:
-                yield sse("error", {"kind": "model", "message": "모델 호출에 실패했어요"})
+                logger.exception("model stream failed")
+                if text_parts:
+                    yield sse("done", _response("".join(text_parts)).model_dump(mode="json"))
+                else:
+                    yield sse("error", {"kind": "model", "message": "모델 호출에 실패했어요"})
     finally:
         TOOL_EVENTS.reset(token)
 
