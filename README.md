@@ -31,7 +31,7 @@ python3 -m venv .venv
 pip install -r requirements.txt
 cp .env.example .env
 # .env의 COPILOT_GITHUB_TOKEN에 실제 토큰을 로컬에서만 설정
-uvicorn backend.api.app:app --reload --port 8000
+uvicorn backend.app.main:app --reload --port 8000
 ```
 
 Copilot CLI 인증은 `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, `GITHUB_TOKEN` 중
@@ -46,3 +46,14 @@ docker run --rm --env-file .env -p 8000:8000 cheongdo-ciry-backend
 
 컨테이너는 `PORT` 환경변수(기본값 `8000`)로 uvicorn을 실행하며,
 `docker run --env-file`로 전달된 Copilot 인증 환경변수를 그대로 사용합니다.
+
+## 배포
+
+Azure Container Apps 배포 전 `az login`과 구독 선택을 완료한 뒤, 서버 비밀은 로컬 셸에서만 주입합니다.
+`DEMO_PASSWORD`는 기본값을 제공하지 않으며, 설정하지 않으면 데모 인증 없이 실행됩니다.
+
+```bash
+az containerapp up -n cheongdo-ciry -g cheongdo-rg --source . --ingress external --target-port 8000
+az containerapp secret set -n cheongdo-ciry -g cheongdo-rg --secrets copilot-token="$(gh auth token)"
+az containerapp update -n cheongdo-ciry -g cheongdo-rg --set-env-vars COPILOT_GITHUB_TOKEN=secretref:copilot-token
+```

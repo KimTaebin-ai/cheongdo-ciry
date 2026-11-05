@@ -70,6 +70,12 @@ class Store:
         r = self.conn.execute("SELECT * FROM bills WHERE id=?", (bill_id,)).fetchone()
         return self._bill(r) if r else None
 
+    def save_bill(self, bill: Bill) -> Bill:
+        with self.lock:
+            saved = self._upsert_bill(bill)
+            self.conn.commit()
+            return saved
+
     def list_bills(self) -> list[Bill]:
         with self.lock:
             rows = self.conn.execute("SELECT * FROM bills ORDER BY due_date, kind").fetchall()
