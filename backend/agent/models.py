@@ -42,8 +42,8 @@ class Bill(BaseModel):
     provider: str
     billing_month: str = Field(pattern=r"^\d{4}-\d{2}$")
     amount_krw: int
-    due_date: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
-    autopay: bool
+    due_date: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$")
+    autopay: bool | None = None
     status: BillStatus
     source: BillSource
     reminders: list[Reminder] = Field(default_factory=list)
@@ -62,6 +62,14 @@ class ExtractedBill(BaseModel):
     source: BillSource
     reminders: list[Reminder] = Field(default_factory=list)
     is_sample: bool = False
+
+
+class BillProposal(BaseModel):
+    proposal_id: str
+    session_id: str
+    bill: ExtractedBill
+    missing_fields: list[str] = Field(default_factory=list)
+    expires_at: datetime
 
 
 class BillQuery(BaseModel):

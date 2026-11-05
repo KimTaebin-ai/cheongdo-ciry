@@ -49,16 +49,26 @@ def make_tools(store: BillStore) -> list[object]:
 
     def extract_bill(text: str) -> dict:
         """붙여넣은 고지서 텍스트에서 청구 필드를 추출하며 저장하지 않는다."""
-        amount_match = re.search(r"([\d,]+)\s*원", text)
-        date_match = re.search(r"(20\d{2}-\d{2}-\d{2})", text)
-        month_match = re.search(r"(20\d{2}-\d{2})", text)
-        category = next((value for value in BillCategory if value.value in text.lower()), None)
+        amount_match = re.search(r"(?:청구금액|납부하실 금액|금액|요금)\s*[:：]?\s*([\d,]+)\s*원", text)
+        date_match = re.search(r"(?:납부기한|납기일|납부일)\s*[:：]?\s*(20\d{2}-\d{2}-\d{2})", text)
+        month_match = re.search(r"(?:청구월|사용월|귀하의 사용기간)\s*[:：]?\s*(20\d{2})[년./-]\s*(\d{1,2})", text)
+        provider_patterns = (
+            (r"한국전력공사", "한국전력공사", BillCategory.electricity),
+            (r"청도도시가스", "청도도시가스", BillCategory.gas),
+            (r"청도아파트", "청도아파트", BillCategory.maintenance),
+        )
+        provider, category = next(
+            ((name, value) for pattern, name, value in provider_patterns if re.search(pattern, text)),
+            (None, None),
+        )
         excerpt = text[:200]
         payload = ExtractedBill.model_validate({
             "id": None,
             "category": category.value if category else None,
-            "provider": None,
-            "billing_month": month_match.group(1) if month_match else None,
+            "provider": provider,
+            "billing_month": (
+                f"{month_match.group(1)}-{int(month_match.group(2)):02d}" if month_match else None
+            ),
             "amount_krw": int(amount_match.group(1).replace(",", "")) if amount_match else None,
             "due_date": date_match.group(1) if date_match else None,
             "autopay": None,
