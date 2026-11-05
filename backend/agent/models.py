@@ -2,6 +2,7 @@
 
 from datetime import datetime
 from enum import StrEnum
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -23,7 +24,7 @@ class BillStatus(StrEnum):
 
 
 class BillSource(BaseModel):
-    type: str
+    type: Literal["sample", "paste"]
     excerpt: str
     hash: str
 
@@ -40,13 +41,27 @@ class Bill(BaseModel):
     category: BillCategory
     provider: str
     billing_month: str = Field(pattern=r"^\d{4}-\d{2}$")
-    amount_krw: int | None = None
-    due_date: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$")
+    amount_krw: int
+    due_date: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
     autopay: bool
     status: BillStatus
     source: BillSource
     reminders: list[Reminder] = Field(default_factory=list)
     is_sample: bool
+
+
+class ExtractedBill(BaseModel):
+    id: str | None = None
+    category: BillCategory | None = None
+    provider: str | None = None
+    billing_month: str | None = None
+    amount_krw: int | None = None
+    due_date: str | None = None
+    autopay: bool | None = None
+    status: BillStatus
+    source: BillSource
+    reminders: list[Reminder] = Field(default_factory=list)
+    is_sample: bool = False
 
 
 class BillQuery(BaseModel):

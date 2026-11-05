@@ -13,6 +13,20 @@ def test_unregistered_item_query() -> None:
     assert tools[1]("missing") is None
 
 
+def test_all_sample_categories_are_present() -> None:
+    bills = make_tools(sample_store())[0]()
+    assert {bill["category"] for bill in bills} == {"electricity", "gas", "rent"}
+    assert all(bill["is_sample"] for bill in bills)
+
+
+def test_extract_does_not_save_and_marks_review() -> None:
+    store = sample_store()
+    tools = make_tools(store)
+    extracted = tools[2]("전기요금 42,100원 납부기한 2026-11-20")
+    assert extracted["status"] == "needs_review"
+    assert len(store.list_bills()) == 3
+
+
 def test_duplicate_save() -> None:
     store = sample_store()
     tools = make_tools(store)

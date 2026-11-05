@@ -9,7 +9,7 @@ from datetime import date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
 from .fake_store import BillStore
-from .models import Bill, BillCategory, BillStatus, Reminder
+from .models import Bill, BillCategory, BillStatus, ExtractedBill, Reminder
 
 TOOL_EVENTS: ContextVar[list[dict[str, object]] | None] = ContextVar("tool_events", default=None)
 SEOUL = ZoneInfo("Asia/Seoul")
@@ -24,10 +24,10 @@ def _record(event: dict[str, object]) -> None:
 def make_tools(store: BillStore) -> list[object]:
     def list_bills(category: str | None = None, month: str | None = None) -> list[dict]:
         """청구 목록을 category와 month 조건으로 조회한다."""
+        _record({"type": "tool_call", "name": "list_bills", "arguments": {"category": category, "month": month}})
         try:
             parsed = BillCategory(category) if category else None
             result = store.list_bills(parsed, month)
-            _record({"type": "tool_call", "name": "list_bills", "arguments": {"category": category, "month": month}})
             payload = [bill.model_dump(mode="json") for bill in result]
             _record({"type": "tool_result", "name": "list_bills", "summary": f"{len(payload)}건 조회"})
             return payload
@@ -54,7 +54,7 @@ def make_tools(store: BillStore) -> list[object]:
         month_match = re.search(r"(20\d{2}-\d{2})", text)
         category = next((value for value in BillCategory if value.value in text.lower()), None)
         excerpt = text[:200]
-        payload = {
+        payload = ExtractedBill.model_validate({
             "id": None,
             "category": category.value if category else None,
             "provider": None,
@@ -66,7 +66,7 @@ def make_tools(store: BillStore) -> list[object]:
             "source": {"type": "paste", "excerpt": excerpt, "hash": hashlib.sha256(text.encode()).hexdigest()},
             "reminders": [],
             "is_sample": False,
-        }
+        }).model_dump(mode="json")
         _record({"type": "tool_call", "name": "extract_bill", "arguments": {"text": "[redacted]"}})
         _record({"type": "tool_result", "name": "extract_bill", "summary": "필드 추출 완료"})
         return payload
