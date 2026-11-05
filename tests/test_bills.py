@@ -40,4 +40,5 @@ def test_reminder_calculation() -> None:
     store = sample_store()
     tools = make_tools(store)
     reminders = tools[4]("sample-electricity-2026-10")
+    assert {item["at"][:10] for item in reminders} == {"2026-11-17", "2026-11-19"}
     assert {item["at"][-14:] for item in reminders} == {"09:00:00+09:00"}
