@@ -14,9 +14,9 @@
 
 - [PRD: 목적·피처·3명 분업·120분 일정](PRD.md)
 - [TRD: 기술 구성·공통 계약·배포](TRD.md)
-- [TDD: 선택한 방향의 이유](TDD.md)
-- [AGENTS: 작업 규칙과 필수 핸드오프](AGENTS.md)
-- [공과금 연동 조사](research/utility-integrations.md)
-- [작업 인계 기록](handoffs/)
+- [TDD: 선택한 방향의 이유](docs/TDD.md)
+- [AGENTS: 작업 규칙과 필수 핸드오프](docs/AGENTS.md)
+- [공과금 연동 조사](docs/research/utility-integrations.md)
+- [작업 인계 기록](docs/handoffs/)
 
 이전 핸드오프는 당시 상태를 보존한 기록입니다. 현재 범위는 최신 PRD를 따릅니다.

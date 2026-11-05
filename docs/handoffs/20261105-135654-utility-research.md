@@ -6,7 +6,7 @@
 
 ## 완료와 변경
 
-`research/utility-integrations.md`에 한전 EDS, 하이픈 전기·가스, 인포텍 후보와 공식 근거, 청도 가스 공급사, 후속 검증 순서를 기록했다. 기존 PRD/TRD/TDD 및 API 계약은 변경하지 않았다.
+`docs/research/utility-integrations.md`에 한전 EDS, 하이픈 전기·가스, 인포텍 후보와 공식 근거, 청도 가스 공급사, 후속 검증 순서를 기록했다. 기존 PRD/TRD/TDD 및 API 계약은 변경하지 않았다.
 
 ## 핵심 결정과 제한
 
