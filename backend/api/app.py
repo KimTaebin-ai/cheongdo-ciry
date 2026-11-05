@@ -58,8 +58,7 @@ def get_agent() -> GitHubCopilotAgent:
 
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
-    async with get_agent():
-        yield
+    yield
 
 
 app = FastAPI(title="Cheongdo Ciry Backend", lifespan=lifespan)
@@ -99,6 +98,16 @@ def prefetch_bill_data(message: str) -> list[dict] | None:
     return make_tools(store)[0](category=category.value)
 
 
+async def stream_agent_response(current_agent: GitHubCopilotAgent, message: str, session: object) -> AsyncIterator[object]:
+    timeout_seconds = int(os.getenv("GITHUB_COPILOT_TIMEOUT", "60"))
+    async with current_agent:
+        result = current_agent.run(message, stream=True, session=session)
+        stream = await asyncio.wait_for(result, timeout=timeout_seconds) if inspect.isawaitable(result) else result
+        async with asyncio.timeout(timeout_seconds):
+            async for update in stream:
+                yield update
+
+
 async def chat_events(request: ChatRequest) -> AsyncIterator[str]:
     events: list[dict[str, object]] = []
     token: Token = TOOL_EVENTS.set(events)
@@ -121,17 +130,13 @@ async def chat_events(request: ChatRequest) -> AsyncIterator[str]:
                         "서버가 list_bills 도구로 조회한 결과만 사용해 답하세요. "
                         f"도구 결과 JSON: {json.dumps(tool_data, ensure_ascii=False)}"
                     )
-                result = current_agent.run(agent_message, stream=True, session=session)
-                timeout_seconds = int(os.getenv("GITHUB_COPILOT_TIMEOUT", "60"))
-                stream = await asyncio.wait_for(result, timeout=timeout_seconds) if inspect.isawaitable(result) else result
                 emitted = 0
-                async with asyncio.timeout(timeout_seconds):
-                    async for update in stream:
-                        for event in events[emitted:]:
-                            yield sse(event["type"], {key: value for key, value in event.items() if key != "type"})
-                        emitted = len(events)
-                        if getattr(update, "text", None):
-                            yield sse("token", {"text": update.text})
+                async for update in stream_agent_response(current_agent, agent_message, session):
+                    for event in events[emitted:]:
+                        yield sse(event["type"], {key: value for key, value in event.items() if key != "type"})
+                    emitted = len(events)
+                    if getattr(update, "text", None):
+                        yield sse("token", {"text": update.text})
                 for event in events[emitted:]:
                     yield sse(event["type"], {key: value for key, value in event.items() if key != "type"})
                 yield sse("done", {})

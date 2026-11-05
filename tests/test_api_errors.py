@@ -5,6 +5,12 @@ from backend.api import app as api
 
 def test_model_failure_is_model_error(monkeypatch) -> None:
     class BrokenAgent:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
         def create_session(self, *, session_id: str):
             return object()
 

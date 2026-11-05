@@ -20,3 +20,29 @@
 - [작업 인계 기록](docs/handoffs/)
 
 이전 핸드오프는 당시 상태를 보존한 기록입니다. 현재 범위는 최신 PRD를 따릅니다.
+
+## 실행
+
+Python 환경:
+
+```bash
+python3 -m venv .venv
+. .venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env
+# .env의 COPILOT_GITHUB_TOKEN에 실제 토큰을 로컬에서만 설정
+uvicorn backend.api.app:app --reload --port 8000
+```
+
+Copilot CLI 인증은 `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, `GITHUB_TOKEN` 중
+하나를 환경변수로 전달합니다. 토큰은 코드·로그·Docker 이미지에 넣지 않습니다.
+
+Docker:
+
+```bash
+docker build -t cheongdo-ciry-backend .
+docker run --rm --env-file .env -p 8000:8000 cheongdo-ciry-backend
+```
+
+컨테이너는 `PORT` 환경변수(기본값 `8000`)로 uvicorn을 실행하며,
+`docker run --env-file`로 전달된 Copilot 인증 환경변수를 그대로 사용합니다.
